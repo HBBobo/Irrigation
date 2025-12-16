@@ -99,7 +99,8 @@ static void handleSetConfig() {
 // POST /api/restart - restart ESP
 static void handleRestart() {
   webServer.send(200, "application/json", "{\"ok\":true}");
-  delay(500);
+  webServer.client().flush();
+  delay(100);
   ESP.restart();
 }
 
@@ -140,11 +141,12 @@ static void handleHistory() {
 
 // POST /api/webui/update - force re-download webui from GitHub
 static void handleWebuiUpdate() {
-  // Delete existing files to force re-download
-  if (sd.exists("/web/index.html")) sd.remove("/web/index.html");
+  // Delete version file to force re-download
+  if (sd.exists("/web/.version")) sd.remove("/web/.version");
 
   webServer.send(200, "application/json", "{\"ok\":true,\"msg\":\"Restarting to update...\"}");
-  delay(500);
+  webServer.client().flush();
+  delay(100);
   ESP.restart();
 }
 

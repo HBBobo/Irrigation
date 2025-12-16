@@ -8,34 +8,34 @@
 </head>
 
 <body>
-<h1>🌱 ESP32 Irrigation</h1>
+<h1>ESP32 Irrigation</h1>
 
 <div class="card">
   <h2>Status</h2>
   <div class="row">
     <div class="col">
-      <div class="stat" id="soil">–</div>
+      <div class="stat" id="soil">-</div>
       <div class="small">Soil ADC</div>
     </div>
     <div class="col">
-      <div class="stat" id="temp">–</div>
-      <div class="small">Chip °C</div>
+      <div class="stat" id="temp">-</div>
+      <div class="small">Chip C</div>
     </div>
     <div class="col">
-      <div class="stat" id="cpu">–</div>
+      <div class="stat" id="cpu">-</div>
       <div class="small">CPU %</div>
     </div>
     <div class="col">
-      <div class="stat" id="pump">–</div>
+      <div class="stat" id="pump">-</div>
       <div class="small">Pump</div>
     </div>
   </div>
   <div class="row" style="margin-top:10px">
     <div class="col">
-      <div class="small">Lockout: <span id="lockout">–</span></div>
+      <div class="small">Lockout: <span id="lockout">-</span></div>
     </div>
     <div class="col">
-      <div class="small">On-time: <span id="onTime">–</span>s</div>
+      <div class="small">On-time: <span id="onTime">-</span>s</div>
     </div>
   </div>
 </div>
@@ -80,7 +80,26 @@
 </div>
 
 <div class="card">
-  <h2>History (Soil Moisture)</h2>
+  <h2>History</h2>
+  <div class="row" style="margin-bottom:10px">
+    <div class="col">
+      <select id="chartMetric" onchange="drawChart()">
+        <option value="soil">Soil Moisture</option>
+        <option value="temp">Temperature</option>
+        <option value="cpu">CPU Usage</option>
+      </select>
+    </div>
+    <div class="col">
+      <select id="chartWindow" onchange="drawChart()">
+        <option value="60">Last 1 min</option>
+        <option value="300">Last 5 min</option>
+        <option value="900">Last 15 min</option>
+        <option value="1800">Last 30 min</option>
+        <option value="3600" selected>Last 1 hour</option>
+        <option value="0">All</option>
+      </select>
+    </div>
+  </div>
   <canvas id="chart"></canvas>
 </div>
 
@@ -98,7 +117,7 @@
     </div>
   </div>
   <div class="small" style="margin-top:10px">
-    Last update: <span id="lastUpdate">–</span>
+    Last update: <span id="lastUpdate">-</span>
   </div>
 </div>
 

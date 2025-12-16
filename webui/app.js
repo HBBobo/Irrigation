@@ -4,14 +4,18 @@ const $ = id => document.getElementById(id);
 const canvas = $("chart");
 const ctx = canvas.getContext("2d");
 
-// Auto-refresh interval (ms)
+// Auto-refresh intervals (ms)
 const STATUS_INTERVAL = 2000;
-const HISTORY_INTERVAL = 30000;
+const HISTORY_INTERVAL = 10000;
+
+// History data storage
+let historyData = { soil: [], temp: [], cpu: [], idx: 0, len: 0 };
+let logPeriodMs = 5000; // Default, will be updated from config
 
 // Fetch JSON helper
 async function fetchJSON(url) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }
 
@@ -56,6 +60,11 @@ async function loadConfig() {
     $("wetOff").value = c.wetOff;
     $("pumpPwm").value = c.pumpPwm;
     $("mode").value = c.mode;
+
+    // Store log period for chart calculations
+    if (c.logPeriodMs) {
+      logPeriodMs = c.logPeriodMs;
+    }
   } catch (e) {
     console.error("Config error:", e);
   }
@@ -105,8 +114,8 @@ async function restart() {
 
   try {
     await fetch("/api/restart", { method: "POST" });
-    alert("Restarting... Page will reload in 10 seconds.");
-    setTimeout(() => location.reload(), 10000);
+    alert("Restarting... Page will reload in 5 seconds.");
+    setTimeout(() => location.reload(), 5000);
   } catch (e) {
     alert("Failed to restart");
   }
@@ -118,16 +127,66 @@ async function updateWebUI() {
 
   try {
     await fetch("/api/webui/update", { method: "POST" });
-    alert("Updating WebUI... Page will reload in 15 seconds.");
-    setTimeout(() => location.reload(), 15000);
+    alert("Updating WebUI... Page will reload in 10 seconds.");
+    setTimeout(() => location.reload(), 10000);
   } catch (e) {
     alert("Failed to update WebUI");
   }
 }
 
-// Draw chart
-function drawChart(arr, color = "#4caf50") {
-  if (!arr || arr.length < 2) return;
+// Get chart color based on metric
+function getChartColor(metric) {
+  switch (metric) {
+    case "soil": return "#4caf50";
+    case "temp": return "#ff9800";
+    case "cpu": return "#2196f3";
+    default: return "#4caf50";
+  }
+}
+
+// Get chart label based on metric
+function getChartLabel(metric) {
+  switch (metric) {
+    case "soil": return "Soil ADC";
+    case "temp": return "Temp C";
+    case "cpu": return "CPU %";
+    default: return "";
+  }
+}
+
+// Draw chart with selected metric and time window
+function drawChart() {
+  const metric = $("chartMetric").value;
+  const windowSec = parseInt($("chartWindow").value);
+
+  let arr = historyData[metric] || [];
+  if (!arr || arr.length < 2) {
+    // Clear canvas if no data
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * window.devicePixelRatio;
+    canvas.height = rect.height * window.devicePixelRatio;
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.fillStyle = "#666";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No data yet", rect.width / 2, rect.height / 2);
+    return;
+  }
+
+  // Calculate how many points to show based on time window
+  let pointsToShow = arr.length;
+  if (windowSec > 0) {
+    const pointsPerSec = 1000 / logPeriodMs;
+    pointsToShow = Math.min(arr.length, Math.ceil(windowSec * pointsPerSec));
+  }
+
+  // Get the last N points
+  const displayArr = arr.slice(-pointsToShow);
+
+  const color = getChartColor(metric);
+  const label = getChartLabel(metric);
 
   // Set canvas size
   const rect = canvas.getBoundingClientRect();
@@ -142,11 +201,13 @@ function drawChart(arr, color = "#4caf50") {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, w, h);
 
+  if (displayArr.length < 2) return;
+
   // Calculate range
-  const min = Math.min(...arr);
-  const max = Math.max(...arr);
+  const min = Math.min(...displayArr);
+  const max = Math.max(...displayArr);
   const span = max - min || 1;
-  const padding = 30;
+  const padding = 40;
 
   // Draw grid lines
   ctx.strokeStyle = "#333";
@@ -163,7 +224,7 @@ function drawChart(arr, color = "#4caf50") {
     ctx.fillStyle = "#666";
     ctx.font = "10px sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(val.toFixed(0), padding - 5, y + 3);
+    ctx.fillText(val.toFixed(1), padding - 5, y + 3);
   }
 
   // Draw data line
@@ -171,8 +232,8 @@ function drawChart(arr, color = "#4caf50") {
   ctx.lineWidth = 2;
   ctx.beginPath();
 
-  arr.forEach((v, i) => {
-    const x = padding + (i / (arr.length - 1)) * (w - padding - 10);
+  displayArr.forEach((v, i) => {
+    const x = padding + (i / (displayArr.length - 1)) * (w - padding - 10);
     const y = padding + ((max - v) / span) * (h - 2 * padding);
 
     if (i === 0) ctx.moveTo(x, y);
@@ -181,19 +242,41 @@ function drawChart(arr, color = "#4caf50") {
 
   ctx.stroke();
 
-  // Draw current value
+  // Draw current value and label
   ctx.fillStyle = color;
   ctx.font = "bold 14px sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText("Current: " + arr[arr.length - 1], padding + 5, 20);
+  ctx.fillText(label + ": " + displayArr[displayArr.length - 1].toFixed(1), padding + 5, 20);
+
+  // Draw point count
+  ctx.fillStyle = "#666";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText(displayArr.length + " points", w - 10, 15);
 }
 
-// Load history
+// Load history from ESP
 async function loadHistory() {
   try {
     const h = await fetchJSON("/api/history");
-    if (h.soil && h.soil.length > 0) {
-      drawChart(h.soil);
+
+    if (h && h.len > 0) {
+      // Reorder circular buffer to linear array (oldest first)
+      const reorder = (arr, idx, len, filled) => {
+        if (!arr || arr.length === 0) return [];
+        if (!filled) return arr.slice(0, len);
+        // Circular buffer: data from idx to end, then 0 to idx
+        return [...arr.slice(idx), ...arr.slice(0, idx)];
+      };
+
+      const filled = h.len >= 120; // HIST_LEN from config.h
+      historyData.soil = reorder(h.soil, h.idx, h.len, filled);
+      historyData.temp = reorder(h.temp, h.idx, h.len, filled);
+      historyData.cpu = reorder(h.cpu, h.idx, h.len, filled);
+      historyData.len = h.len;
+      historyData.idx = h.idx;
+
+      drawChart();
     }
   } catch (e) {
     console.error("History error:", e);
@@ -211,12 +294,12 @@ function loadAll() {
 document.addEventListener("DOMContentLoaded", () => {
   loadAll();
 
-  // Auto-refresh status
+  // Auto-refresh status (every 2 seconds)
   setInterval(loadStatus, STATUS_INTERVAL);
 
-  // Auto-refresh history (less frequent)
+  // Auto-refresh history (every 10 seconds)
   setInterval(loadHistory, HISTORY_INTERVAL);
 });
 
 // Handle window resize for chart
-window.addEventListener("resize", loadHistory);
+window.addEventListener("resize", drawChart);
