@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<title>ESP32 Irrigation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+body {
+  font-family: system-ui, sans-serif;
+  background: #111;
+  color: #eee;
+  margin: 0;
+  padding: 16px;
+}
+h1, h2 {
+  margin-top: 0.2em;
+}
+.card {
+  background: #1c1c1c;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.col {
+  flex: 1;
+  min-width: 140px;
+}
+label {
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+input, select, button {
+  width: 100%;
+  padding: 6px;
+  margin-top: 4px;
+  background: #222;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 6px;
+}
+button {
+  cursor: pointer;
+}
+button.warn {
+  background: #5a1c1c;
+}
+button.ok {
+  background: #1c5a2a;
+}
+.stat {
+  font-size: 1.4em;
+}
+canvas {
+  width: 100%;
+  height: 200px;
+  background: #000;
+  border-radius: 6px;
+}
+.small {
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+</style>
+</head>
+
+<body>
+<h1>🌱 ESP32 Irrigation</h1>
+
+<div class="card">
+  <h2>Status</h2>
+  <div class="row">
+    <div class="col">
+      <div class="stat" id="soil">–</div>
+      <div class="small">Soil ADC</div>
+    </div>
+    <div class="col">
+      <div class="stat" id="temp">–</div>
+      <div class="small">Chip °C</div>
+    </div>
+    <div class="col">
+      <div class="stat" id="cpu">–</div>
+      <div class="small">CPU %</div>
+    </div>
+    <div class="col">
+      <div class="stat" id="pump">–</div>
+      <div class="small">Pump</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Pump mode</h2>
+  <div class="row">
+    <div class="col">
+      <select id="mode">
+        <option value="0">OFF</option>
+        <option value="1">AUTO</option>
+        <option value="2">ON</option>
+      </select>
+    </div>
+    <div class="col">
+      <button class="ok" onclick="saveConfig()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Thresholds</h2>
+  <div class="row">
+    <div class="col">
+      <label>Dry ON</label>
+      <input id="dryOn" type="number">
+    </div>
+    <div class="col">
+      <label>Wet OFF</label>
+      <input id="wetOff" type="number">
+    </div>
+    <div class="col">
+      <label>PWM</label>
+      <input id="pumpPwm" type="number" min="0" max="255">
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>History</h2>
+  <canvas id="chart"></canvas>
+</div>
+
+<div class="card">
+  <h2>System</h2>
+  <div class="row">
+    <div class="col">
+      <button onclick="loadAll()">Refresh</button>
+    </div>
+    <div class="col">
+      <button class="warn" onclick="restart()">Restart ESP</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const ctx = $("chart").getContext("2d");
+
+function fetchJSON(url) {
+  return fetch(url).then(r => r.json());
+}
+
+function loadStatus() {
+  fetchJSON("/api/status").then(s => {
+    $("soil").textContent = s.soil;
+    $("temp").textContent = s.tempC.toFixed(1);
+    $("cpu").textContent = s.cpuPct + "%";
+    $("pump").textContent = s.pumpOn ? "ON" : "OFF";
+  }).catch(()=>{});
+}
+
+function loadConfig() {
+  fetchJSON("/api/config/get").then(c => {
+    $("dryOn").value = c.dryOn;
+    $("wetOff").value = c.wetOff;
+    $("pumpPwm").value = c.pumpPwm;
+    $("mode").value = c.mode;
+  }).catch(()=>{});
+}
+
+function saveConfig() {
+  const p = new URLSearchParams();
+  p.append("dryOn", $("dryOn").value);
+  p.append("wetOff", $("wetOff").value);
+  p.append("pumpPwm", $("pumpPwm").value);
+  p.append("mode", $("mode").value);
+
+  fetch("/api/config/set", {
+    method: "POST",
+    body: p
+  }).then(()=>loadAll());
+}
+
+function restart() {
+  if (!confirm("Restart ESP32?")) return;
+  fetch("/api/restart", { method: "POST" });
+}
+
+function drawChart(arr) {
+  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+  if (!arr || arr.length < 2) return;
+
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  const min = Math.min(...arr);
+  const max = Math.max(...arr);
+  const span = max - min || 1;
+
+  ctx.strokeStyle = "#4caf50";
+  ctx.beginPath();
+  arr.forEach((v,i)=>{
+    const x = i/(arr.length-1)*w;
+    const y = h - ((v-min)/span)*h;
+    if (i===0) ctx.moveTo(x,y);
+    else ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+}
+
+function loadHistory() {
+  fetchJSON("/api/history").then(h => {
+    drawChart(h.soil);
+  }).catch(()=>{});
+}
+
+function loadAll() {
+  loadStatus();
+  loadConfig();
+  loadHistory();
+}
+
+loadAll();
+setInterval(loadStatus, 3000);
+</script>
+
+</body>
+</html>

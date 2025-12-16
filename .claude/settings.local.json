@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Format-Hex main/main.ino | Select-String ''PH2020'' -Context 1,1\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
