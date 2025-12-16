@@ -269,7 +269,7 @@ async function loadHistory() {
         return [...arr.slice(idx), ...arr.slice(0, idx)];
       };
 
-      const filled = h.len >= 120; // HIST_LEN from config.h
+      const filled = h.len >= 240; // HIST_LEN from config.h
       historyData.soil = reorder(h.soil, h.idx, h.len, filled);
       historyData.temp = reorder(h.temp, h.idx, h.len, filled);
       historyData.cpu = reorder(h.cpu, h.idx, h.len, filled);

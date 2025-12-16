@@ -1,5 +1,6 @@
 #pragma once
 #include <WebServer.h>
+#include <esp_task_wdt.h>
 #include "fs_api.h"
 #include "config.h"
 
@@ -106,6 +107,9 @@ static void handleRestart() {
 
 // GET /api/history - sensor history
 static void handleHistory() {
+  // Reset watchdog before long operation
+  esp_task_wdt_reset();
+
   webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
   webServer.send(200, "application/json", "");
 
@@ -122,18 +126,21 @@ static void handleHistory() {
   for (int i = 0; i < count; i++) {
     if (i > 0) client.print(",");
     client.print(gHist->soil[i]);
+    if ((i & 0x3F) == 0) delay(0);  // Yield every 64 items
   }
 
   client.print("],\"temp\":[");
   for (int i = 0; i < count; i++) {
     if (i > 0) client.print(",");
     client.print(gHist->tempC_x10[i] / 10.0f);
+    if ((i & 0x3F) == 0) delay(0);  // Yield every 64 items
   }
 
   client.print("],\"cpu\":[");
   for (int i = 0; i < count; i++) {
     if (i > 0) client.print(",");
     client.print(gHist->cpuPct[i]);
+    if ((i & 0x3F) == 0) delay(0);  // Yield every 64 items
   }
 
   client.print("]}");

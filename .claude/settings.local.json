@@ -5,7 +5,8 @@
       "Bash(cat:*)",
       "Bash(find:*)",
       "Bash(del \"d:\\Programozas\\MicroController\\Irrigation\\webui\\version.txt\")",
-      "Bash(powershell -Command \"Get-ChildItem ''d:\\Programozas\\MicroController\\Irrigation\\webui\\'' | Select-Object Name, Length\")"
+      "Bash(powershell -Command \"Get-ChildItem ''d:\\Programozas\\MicroController\\Irrigation\\webui\\'' | Select-Object Name, Length\")",
+      "Bash(powershell -Command:*)"
     ],
     "deny": [],
     "ask": []
