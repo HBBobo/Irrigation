@@ -41,16 +41,12 @@ static String sanitizePath(const String& path) {
     clean.replace("//", "/");
   }
 
-  // Whitelist: only allow specific directories
-  // Allow: /web/, /log/, and root listing
-  if (clean == "/" ||
-      clean.startsWith("/web/") || clean == "/web" ||
-      clean.startsWith("/log/") || clean == "/log") {
-    return clean;
+  // Remove trailing slash (except for root)
+  if (clean.length() > 1 && clean.endsWith("/")) {
+    clean = clean.substring(0, clean.length() - 1);
   }
 
-  // Default to root for unauthorized paths
-  return "/";
+  return clean;
 }
 
 static void fs_handleList(WebServer& srv) {
@@ -113,8 +109,174 @@ static void fs_handleList(WebServer& srv) {
   srv.send(200, "application/json", json);
 }
 
+// Download file (supports chunked range requests)
+static void fs_handleDownload(WebServer& srv) {
+  if (!srv.hasArg("path")) {
+    srv.send(400, "text/plain", "missing path");
+    return;
+  }
+
+  String path = sanitizePath(srv.arg("path"));
+  FsFile f = sd.open(path.c_str(), O_RDONLY);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    srv.send(404, "text/plain", "file not found");
+    return;
+  }
+
+  size_t fileSize = f.size();
+  size_t start = 0;
+  size_t len = fileSize;
+
+  // Support range requests for chunked downloads
+  if (srv.hasArg("start")) {
+    start = srv.arg("start").toInt();
+    if (start >= fileSize) {
+      f.close();
+      srv.send(416, "text/plain", "range not satisfiable");
+      return;
+    }
+  }
+  if (srv.hasArg("len")) {
+    len = srv.arg("len").toInt();
+  }
+  if (start + len > fileSize) {
+    len = fileSize - start;
+  }
+
+  // Seek to start position
+  f.seek(start);
+
+  // Send headers
+  srv.sendHeader("Content-Length", String(len));
+  srv.sendHeader("X-File-Size", String(fileSize));
+  srv.send(200, "application/octet-stream", "");
+
+  // Stream file in chunks
+  uint8_t buf[1024];
+  size_t sent = 0;
+  WiFiClient client = srv.client();
+
+  while (sent < len && f.available()) {
+    size_t toRead = min((size_t)sizeof(buf), len - sent);
+    size_t n = f.read(buf, toRead);
+    if (n == 0) break;
+    client.write(buf, n);
+    sent += n;
+    delay(0);  // Yield
+  }
+
+  f.close();
+}
+
+// Delete file or empty directory
+static void fs_handleDelete(WebServer& srv) {
+  if (!srv.hasArg("path")) {
+    srv.send(400, "application/json", "{\"error\":\"missing path\"}");
+    return;
+  }
+
+  String path = sanitizePath(srv.arg("path"));
+
+  // Prevent deleting critical files
+  if (path == "/" || path == "/web" || path == "/cfg.txt") {
+    srv.send(403, "application/json", "{\"error\":\"cannot delete protected path\"}");
+    return;
+  }
+
+  if (!sd.exists(path.c_str())) {
+    srv.send(404, "application/json", "{\"error\":\"not found\"}");
+    return;
+  }
+
+  FsFile f = sd.open(path.c_str());
+  bool isDir = f.isDirectory();
+  f.close();
+
+  bool ok;
+  if (isDir) {
+    ok = sd.rmdir(path.c_str());
+  } else {
+    ok = sd.remove(path.c_str());
+  }
+
+  if (ok) {
+    srv.send(200, "application/json", "{\"ok\":true}");
+  } else {
+    srv.send(500, "application/json", "{\"error\":\"delete failed\"}");
+  }
+}
+
+// Upload file (supports chunked uploads)
+static void fs_handleUpload(WebServer& srv) {
+  if (!srv.hasArg("path")) {
+    srv.send(400, "application/json", "{\"error\":\"missing path\"}");
+    return;
+  }
+
+  String path = sanitizePath(srv.arg("path"));
+  bool append = srv.hasArg("append") && srv.arg("append") == "1";
+
+  // Get raw body data
+  if (srv.hasArg("plain")) {
+    String body = srv.arg("plain");
+
+    FsFile f = sd.open(path.c_str(), append ? (O_WRITE | O_CREAT | O_APPEND) : (O_WRITE | O_CREAT | O_TRUNC));
+    if (!f) {
+      srv.send(500, "application/json", "{\"error\":\"cannot open file\"}");
+      return;
+    }
+
+    f.write((const uint8_t*)body.c_str(), body.length());
+    size_t sz = f.size();
+    f.close();
+
+    char json[64];
+    snprintf(json, sizeof(json), "{\"ok\":true,\"size\":%lu}", (unsigned long)sz);
+    srv.send(200, "application/json", json);
+  } else {
+    srv.send(400, "application/json", "{\"error\":\"no data\"}");
+  }
+}
+
+// Create directory
+static void fs_handleMkdir(WebServer& srv) {
+  if (!srv.hasArg("path")) {
+    srv.send(400, "application/json", "{\"error\":\"missing path\"}");
+    return;
+  }
+
+  String path = sanitizePath(srv.arg("path"));
+
+  if (sd.exists(path.c_str())) {
+    srv.send(409, "application/json", "{\"error\":\"already exists\"}");
+    return;
+  }
+
+  if (sd.mkdir(path.c_str())) {
+    srv.send(200, "application/json", "{\"ok\":true}");
+  } else {
+    srv.send(500, "application/json", "{\"error\":\"mkdir failed\"}");
+  }
+}
+
 static void fs_register(WebServer& srv) {
   srv.on("/api/fs/list", HTTP_GET, [&]() {
     fs_handleList(srv);
+  });
+  srv.on("/api/fs/download", HTTP_GET, [&]() {
+    fs_handleDownload(srv);
+  });
+  srv.on("/api/fs/delete", HTTP_POST, [&]() {
+    fs_handleDelete(srv);
+  });
+  srv.on("/api/fs/delete", HTTP_GET, [&]() {
+    fs_handleDelete(srv);  // Allow GET for easy testing
+  });
+  srv.on("/api/fs/upload", HTTP_POST, [&]() {
+    fs_handleUpload(srv);
+  });
+  srv.on("/api/fs/mkdir", HTTP_POST, [&]() {
+    fs_handleMkdir(srv);
   });
 }

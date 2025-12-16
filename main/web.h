@@ -208,6 +208,7 @@ static void web_begin(Config* cfg, Runtime* rt, Histories* hist) {
   webServer.on("/api/history", HTTP_GET, handleHistory);
   webServer.on("/api/restart", HTTP_POST, handleRestart);
   webServer.on("/api/webui/update", HTTP_POST, handleWebuiUpdate);
+  webServer.on("/api/webui/update", HTTP_GET, handleWebuiUpdate);  // Also allow GET for easy browser trigger
 
   // File browser
   fs_register(webServer);

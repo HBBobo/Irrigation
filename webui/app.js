@@ -290,9 +290,166 @@ function loadAll() {
   loadHistory();
 }
 
+// ---- File Browser ----
+let currentPath = "/";
+
+function fsFormatSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+async function fsLoadDir(path) {
+  currentPath = path || "/";
+  $("fsPath").textContent = currentPath;
+
+  try {
+    const data = await fetchJSON("/api/fs/list?path=" + encodeURIComponent(currentPath));
+    const list = $("fsList");
+    list.innerHTML = "";
+
+    if (!data.items || data.items.length === 0) {
+      list.innerHTML = "<div class='file-item'>Empty directory</div>";
+      return;
+    }
+
+    data.items.forEach(item => {
+      const div = document.createElement("div");
+      div.className = "file-item";
+
+      const name = document.createElement("span");
+      name.className = "file-name";
+      name.textContent = (item.dir ? "📁 " : "📄 ") + item.name;
+      if (item.dir) {
+        name.style.cursor = "pointer";
+        name.onclick = () => fsLoadDir(currentPath + (currentPath === "/" ? "" : "/") + item.name);
+      }
+
+      const size = document.createElement("span");
+      size.className = "file-size";
+      size.textContent = item.dir ? "" : fsFormatSize(item.size);
+
+      const actions = document.createElement("span");
+      actions.className = "file-actions";
+
+      if (!item.dir) {
+        const dl = document.createElement("button");
+        dl.textContent = "↓";
+        dl.title = "Download";
+        dl.onclick = () => fsDownload(currentPath + (currentPath === "/" ? "" : "/") + item.name, item.name);
+        actions.appendChild(dl);
+      }
+
+      const del = document.createElement("button");
+      del.textContent = "×";
+      del.title = "Delete";
+      del.className = "warn";
+      del.onclick = () => fsDelete(currentPath + (currentPath === "/" ? "" : "/") + item.name);
+      actions.appendChild(del);
+
+      div.appendChild(name);
+      div.appendChild(size);
+      div.appendChild(actions);
+      list.appendChild(div);
+    });
+  } catch (e) {
+    console.error("FS list error:", e);
+    $("fsList").innerHTML = "<div class='file-item'>Error loading directory</div>";
+  }
+}
+
+function fsUp() {
+  if (currentPath === "/") return;
+  const parts = currentPath.split("/").filter(p => p);
+  parts.pop();
+  fsLoadDir("/" + parts.join("/"));
+}
+
+function fsRefresh() {
+  fsLoadDir(currentPath);
+}
+
+async function fsDownload(path, filename) {
+  try {
+    const res = await fetch("/api/fs/download?path=" + encodeURIComponent(path));
+    if (!res.ok) throw new Error("Download failed");
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("Download failed: " + e.message);
+  }
+}
+
+async function fsDelete(path) {
+  if (!confirm("Delete " + path + "?")) return;
+
+  try {
+    const res = await fetch("/api/fs/delete?path=" + encodeURIComponent(path), { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      fsRefresh();
+    } else {
+      alert("Delete failed: " + (data.error || "unknown error"));
+    }
+  } catch (e) {
+    alert("Delete failed: " + e.message);
+  }
+}
+
+async function fsUpload() {
+  const input = $("fsUploadFile");
+  if (!input.files || !input.files[0]) {
+    alert("Select a file first");
+    return;
+  }
+
+  const file = input.files[0];
+  const path = currentPath + (currentPath === "/" ? "" : "/") + file.name;
+
+  try {
+    // Read file and upload in chunks
+    const CHUNK_SIZE = 4096;
+    const reader = new FileReader();
+
+    reader.onload = async function(e) {
+      const data = new Uint8Array(e.target.result);
+      let offset = 0;
+
+      while (offset < data.length) {
+        const chunk = data.slice(offset, offset + CHUNK_SIZE);
+        const append = offset > 0 ? "1" : "0";
+
+        const res = await fetch("/api/fs/upload?path=" + encodeURIComponent(path) + "&append=" + append, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: String.fromCharCode.apply(null, chunk)
+        });
+
+        if (!res.ok) throw new Error("Upload failed at offset " + offset);
+        offset += chunk.length;
+      }
+
+      alert("Upload complete!");
+      input.value = "";
+      fsRefresh();
+    };
+
+    reader.readAsArrayBuffer(file);
+  } catch (e) {
+    alert("Upload failed: " + e.message);
+  }
+}
+
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   loadAll();
+  fsLoadDir("/");
 
   // Auto-refresh status (every 2 seconds)
   setInterval(loadStatus, STATUS_INTERVAL);

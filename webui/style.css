@@ -113,6 +113,52 @@ canvas {
   border-radius: 6px;
 }
 
+/* File browser */
+.file-list {
+  max-height: 250px;
+  overflow-y: auto;
+  background: #0a0a0a;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  gap: 8px;
+}
+
+.file-item:hover {
+  background: #222;
+}
+
+.file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  font-size: 0.85em;
+  opacity: 0.6;
+  min-width: 60px;
+  text-align: right;
+}
+
+.file-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.file-actions button {
+  width: 28px;
+  padding: 4px;
+  font-size: 0.9em;
+}
+
 /* Mobile responsive */
 @media (max-width: 500px) {
   .col {

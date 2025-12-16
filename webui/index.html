@@ -104,6 +104,30 @@
 </div>
 
 <div class="card">
+  <h2>Files</h2>
+  <div class="row" style="margin-bottom:10px">
+    <div class="col" style="flex:3">
+      <span id="fsPath">/</span>
+    </div>
+    <div class="col">
+      <button onclick="fsUp()">Up</button>
+    </div>
+    <div class="col">
+      <button onclick="fsRefresh()">Refresh</button>
+    </div>
+  </div>
+  <div id="fsList" class="file-list"></div>
+  <div class="row" style="margin-top:10px">
+    <div class="col" style="flex:2">
+      <input type="file" id="fsUploadFile">
+    </div>
+    <div class="col">
+      <button onclick="fsUpload()">Upload</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <h2>System</h2>
   <div class="row">
     <div class="col">
