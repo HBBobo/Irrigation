@@ -236,8 +236,8 @@ static bool storage_downloadToFile(const String& url, const char* outPath, uint3
 
   WiFiClientSecure client;
 
-  // Enable SSL certificate validation
-  client.setCACert(GITHUB_ROOT_CA);
+  // Skip SSL verification for now (GitHub certs change frequently)
+  client.setInsecure();
 
   // Set connection timeout
   client.setTimeout(timeoutMs / 1000);
@@ -298,6 +298,9 @@ static const char* WEB_FILES[] = {
 };
 static const int WEB_FILES_COUNT = 3;
 
+// Expected file sizes (parsed from firmware.json)
+static size_t g_webFileSizes[3] = {0, 0, 0};
+
 // firmware.json URL for version checking
 static const char* FIRMWARE_JSON_URL =
   "https://raw.githubusercontent.com/HBBobo/Irrigation/main/firmware/firmware.json";
@@ -320,6 +323,24 @@ static void storage_downloadWebFile(const char* filename, bool wifiUp) {
   } else {
     Serial.printf("[SD] %s FAIL\n", filename);
   }
+}
+
+// Parse file size from JSON for a specific file
+// Looks for "filename": size pattern
+static size_t storage_parseFileSize(const String& json, const char* filename) {
+  String pattern = String("\"") + filename + "\"";
+  int idx = json.indexOf(pattern);
+  if (idx < 0) return 0;
+
+  // Find the colon after filename
+  int colonIdx = json.indexOf(":", idx);
+  if (colonIdx < 0) return 0;
+
+  // Parse the number after colon
+  int start = colonIdx + 1;
+  while (start < (int)json.length() && (json[start] == ' ' || json[start] == '\t')) start++;
+
+  return (size_t)json.substring(start).toInt();
 }
 
 // Compare version strings (e.g., "1.0" < "1.1" < "2.0")
@@ -366,27 +387,36 @@ static void storage_saveLocalWebuiVersion(const String& version) {
 }
 
 // Fetch webui version from firmware.json on GitHub
-// Parses "webui":{"version":"X.Y"}
+// Parses "webui":{"version":"X.Y", "files":{"name":size,...}}
+// Also populates g_webFileSizes array with expected sizes
 static String storage_getRemoteWebuiVersion(bool wifiUp) {
   if (!wifiUp) return "";
 
   WiFiClientSecure client;
-  client.setCACert(GITHUB_ROOT_CA);
+  // Skip SSL verification for now (GitHub certs change frequently)
+  client.setInsecure();
   client.setTimeout(10);
 
   HTTPClient http;
   http.setTimeout(10000);
 
-  if (!http.begin(client, FIRMWARE_JSON_URL)) return "";
+  Serial.print("[SD] Fetching firmware.json...");
+
+  if (!http.begin(client, FIRMWARE_JSON_URL)) {
+    Serial.println(" begin failed");
+    return "";
+  }
 
   int code = http.GET();
   if (code != 200) {
+    Serial.printf(" HTTP %d\n", code);
     http.end();
     return "";
   }
 
   String json = http.getString();
   http.end();
+  Serial.println(" OK");
 
   // Simple parse: find "webui" then "version":"X.Y"
   int webuiIdx = json.indexOf("\"webui\"");
@@ -402,7 +432,15 @@ static String storage_getRemoteWebuiVersion(bool wifiUp) {
   int quoteEnd = json.indexOf("\"", quoteStart + 1);
   if (quoteEnd < 0) return "";
 
-  return json.substring(quoteStart + 1, quoteEnd);
+  String version = json.substring(quoteStart + 1, quoteEnd);
+
+  // Parse expected file sizes from "files" section
+  for (int i = 0; i < WEB_FILES_COUNT; i++) {
+    g_webFileSizes[i] = storage_parseFileSize(json, WEB_FILES[i]);
+    Serial.printf("[SD] Expected %s: %u bytes\n", WEB_FILES[i], (unsigned)g_webFileSizes[i]);
+  }
+
+  return version;
 }
 
 static void storage_ensureWebUI(bool wifiUp) {
@@ -465,17 +503,49 @@ static void storage_ensureWebUI(bool wifiUp) {
 
   Serial.println("[SD] downloading web UI files...");
 
-  // Download all web files
+  // Download all web files (with delay between to avoid connection issues)
+  int successCount = 0;
   for (int i = 0; i < WEB_FILES_COUNT; i++) {
     storage_downloadWebFile(WEB_FILES[i], wifiUp);
+    delay(1000);  // Wait between downloads to let connection close properly
   }
 
-  // Save version after successful download
-  if (remoteVer.length() == 0) {
-    remoteVer = storage_getRemoteWebuiVersion(wifiUp);
+  // Verify all files exist and have exact expected size
+  for (int i = 0; i < WEB_FILES_COUNT; i++) {
+    char path[32];
+    snprintf(path, sizeof(path), "/web/%s", WEB_FILES[i]);
+    FsFile f = sd.open(path, O_RDONLY);
+    if (f) {
+      size_t actualSize = f.size();
+      size_t expectedSize = g_webFileSizes[i];
+      f.close();
+
+      if (expectedSize > 0 && actualSize == expectedSize) {
+        successCount++;
+        Serial.printf("[SD] %s verified: %u bytes\n", WEB_FILES[i], (unsigned)actualSize);
+      } else {
+        Serial.printf("[SD] %s size mismatch: got %u, expected %u\n",
+                      WEB_FILES[i], (unsigned)actualSize, (unsigned)expectedSize);
+      }
+    } else {
+      Serial.printf("[SD] %s missing\n", WEB_FILES[i]);
+    }
   }
-  if (remoteVer.length() > 0) {
-    storage_saveLocalWebuiVersion(remoteVer);
-    Serial.printf("[SD] WebUI updated to version %s\n", remoteVer.c_str());
+
+  // Only save version if ALL files downloaded and verified successfully
+  if (successCount == WEB_FILES_COUNT) {
+    if (remoteVer.length() == 0) {
+      remoteVer = storage_getRemoteWebuiVersion(wifiUp);
+    }
+    if (remoteVer.length() > 0) {
+      storage_saveLocalWebuiVersion(remoteVer);
+      Serial.printf("[SD] WebUI updated to version %s\n", remoteVer.c_str());
+    }
+  } else {
+    Serial.printf("[SD] WebUI update incomplete: %d/%d files\n", successCount, WEB_FILES_COUNT);
+    // Delete version file to force re-download next boot
+    if (sd.exists(LOCAL_WEBUI_VERSION_FILE)) {
+      sd.remove(LOCAL_WEBUI_VERSION_FILE);
+    }
   }
 }

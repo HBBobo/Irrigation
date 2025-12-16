@@ -4,7 +4,8 @@
       "Bash(powershell -Command \"Format-Hex main/main.ino | Select-String ''PH2020'' -Context 1,1\")",
       "Bash(cat:*)",
       "Bash(find:*)",
-      "Bash(del \"d:\\Programozas\\MicroController\\Irrigation\\webui\\version.txt\")"
+      "Bash(del \"d:\\Programozas\\MicroController\\Irrigation\\webui\\version.txt\")",
+      "Bash(powershell -Command \"Get-ChildItem ''d:\\Programozas\\MicroController\\Irrigation\\webui\\'' | Select-Object Name, Length\")"
     ],
     "deny": [],
     "ask": []

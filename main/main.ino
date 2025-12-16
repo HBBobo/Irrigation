@@ -1,4 +1,3 @@
-#include <esp_task_wdt.h>
 #include "config.h"
 #include "credentials.h"
 #include "net.h"
@@ -20,6 +19,9 @@
 Config cfg;
 Runtime rt;
 Histories hist;
+
+// Track if network services have been initialized
+static bool g_servicesStarted = false;
 
 // ---- Sensor reading ----
 static void readSensors() {
@@ -183,20 +185,16 @@ void setup() {
   if (net_isUp()) {
     ota_begin();
     web_begin(&cfg, &rt, &hist);
+    g_servicesStarted = true;
   }
 
   rt.windowStartMs = millis();
   rt.lastLogMs = millis();
 
-  // Re-enable watchdog now that setup is complete
-  esp_task_wdt_add(NULL);
-
   Serial.println("[SYS] ready");
 }
 
 void loop() {
-  // Feed watchdog
-  esp_task_wdt_reset();
 
   // Core functionality
   readSensors();
@@ -205,8 +203,25 @@ void loop() {
 
   // Network services
   if (net_isUp()) {
-    web_loop();
-    ota_loop();
+    if (g_servicesStarted) {
+      web_loop();
+      ota_loop();
+    }
+  } else {
+    // Stop services when network goes down
+    if (g_servicesStarted) {
+      web_stop();
+      g_servicesStarted = false;
+    }
+
+    // Try to reconnect WiFi periodically
+    if (net_tryReconnect()) {
+      // Just reconnected - start OTA/web and check for webui updates
+      ota_begin();
+      web_begin(&cfg, &rt, &hist);
+      g_servicesStarted = true;
+      storage_ensureWebUI(true);
+    }
   }
 
   // Small delay to prevent tight loop

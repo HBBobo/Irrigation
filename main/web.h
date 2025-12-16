@@ -210,3 +210,8 @@ static void web_begin(Config* cfg, Runtime* rt, Histories* hist) {
 static void web_loop() {
   webServer.handleClient();
 }
+
+static void web_stop() {
+  webServer.stop();
+  Serial.println("[WEB] server stopped");
+}
