@@ -1,0 +1,19 @@
+# Credentials (sensitive)
+main/credentials.h
+
+# Build artifacts
+*.bin
+*.elf
+*.hex
+build/
+.pio/
+nul
+
+# IDE
+.vscode/
+*.code-workspace
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

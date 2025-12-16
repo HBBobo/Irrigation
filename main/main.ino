@@ -1,248 +1,214 @@
-#include <Arduino.h>
-
+#include <esp_task_wdt.h>
 #include "config.h"
+#include "credentials.h"
 #include "net.h"
 #include "ota.h"
 #include "storage.h"
 #include "web.h"
 
-// ===== YOUR WIFI (as requested earlier)
-const char* WIFI_SSID = "Pilgrims_House";
-const char* WIFI_PASS = "PH2020PrV";
+// Hardware pins
+#define SOIL_PIN     34   // ADC input for soil moisture sensor
+#define EN1_PIN      13   // Motor driver enable (PWM)
+#define IN1_PIN      15   // Motor driver input 1
+#define IN2_PIN      27   // Motor driver input 2
 
-// ===== VERSION
-const char* FW_VERSION = "1.0.1";
+// PWM settings
+#define PWM_CHANNEL  0
+#define PWM_FREQ     5000
+#define PWM_RES      8    // 8-bit resolution (0-255)
 
-// ===== PINS
-static const int EN1_PIN  = 12;  // PWM enable (L293D EN)
-static const int IN1_PIN  = 15;
-static const int IN2_PIN  = 27;
-static const int SOIL_PIN = 34;
+Config cfg;
+Runtime rt;
+Histories hist;
 
-// SD SPI pins (your current working/default set)
-static const int SD_MISO = 19;
-static const int SD_MOSI = 23;
-static const int SD_SCK  = 18;
-static const int SD_CS   = 5;
+// ---- Sensor reading ----
+static void readSensors() {
+  // Read soil moisture (ADC)
+  rt.soilNow = analogRead(SOIL_PIN);
 
-// PWM
-static const int PWM_FREQ = 2000;
-static const int PWM_RES  = 8;
+  // Read internal temperature sensor
+  rt.tempC_x10 = (int16_t)(temperatureRead() * 10);
 
-// state
-static Config cfg;
-static Runtime rt;
-static Histories hist;
+  // CPU usage tracking (simplified - percentage of loop time)
+  static uint32_t loopCount = 0;
+  static uint32_t lastCpuCalc = 0;
+  loopCount++;
 
-static bool wifiReady = false;
-static bool servicesStarted = false;
-
-static int readSoilMedian7() {
-  int v[7];
-  for (int i = 0; i < 7; i++) {
-    v[i] = analogRead(SOIL_PIN);
-    delay(2);
-  }
-  for (int i = 0; i < 7; i++)
-    for (int j = i + 1; j < 7; j++)
-      if (v[j] < v[i]) { int t = v[i]; v[i] = v[j]; v[j] = t; }
-  return v[3];
-}
-
-static void pumpWrite(int pwm) {
-  if (pwm < 0) pwm = 0;
-  if (pwm > 255) pwm = 255;
-  ledcWrite(EN1_PIN, pwm);
-}
-
-static void pumpSet(bool on) {
-  if (!on) {
-    pumpWrite(0);
-    return;
-  }
-
-  if (!cfg.softRamp) {
-    pumpWrite(cfg.pumpPwm);
-    return;
-  }
-
-  // soft ramp (fast)
-  for (int p = 0; p <= cfg.pumpPwm; p += 25) {
-    pumpWrite(p);
-    delay(10);
-    delay(0);
-  }
-  pumpWrite(cfg.pumpPwm);
-}
-
-static void historyPush() {
-  hist.soil[hist.idx] = (int16_t)rt.soilNow;
-  hist.tempC_x10[hist.idx] = rt.tempC_x10;
-  hist.cpuPct[hist.idx] = rt.cpuPct;
-
-  hist.idx++;
-  if (hist.idx >= HIST_LEN) {
-    hist.idx = 0;
-    hist.filled = true;
+  if (millis() - lastCpuCalc >= 1000) {
+    // Rough estimate: assume 1000 loops/sec is 100% utilization
+    rt.cpuPct = min((uint8_t)100, (uint8_t)(loopCount / 10));
+    loopCount = 0;
+    lastCpuCalc = millis();
   }
 }
 
-// simple CPU “usage” estimate: busy vs elapsed in the 1s bucket
-static void cpuTick() {
-  static uint32_t lastMs = 0;
-  static uint32_t busyAcc = 0;
-  static uint32_t startMs = 0;
-
+// ---- Pump control with hysteresis and safety limits ----
+static void controlPump() {
   uint32_t now = millis();
-  if (startMs == 0) { startMs = now; lastMs = now; }
 
-  // in Arduino loop, we can approximate busy as (time since last tick minus the explicit idle)
-  // we’ll treat delay(0) as “idle slice”, so we mainly get a rough trend.
-  uint32_t dt = now - lastMs;
-  busyAcc += dt;
-  lastMs = now;
-
-  if (now - startMs >= 1000) {
-    uint32_t total = now - startMs;
-    uint32_t pct = (total == 0) ? 0 : (busyAcc * 100UL) / total;
-    if (pct > 100) pct = 100;
-    rt.cpuPct = (uint8_t)pct;
-    busyAcc = 0;
-    startMs = now;
-  }
-}
-
-static void updateSensors() {
-  rt.soilNow = readSoilMedian7();
-
-  // chip temp (Arduino-ESP32 has temperatureRead())
-  float tC = temperatureRead();
-  rt.tempC_x10 = (int16_t)(tC * 10.0f);
-}
-
-static void pumpLogic(uint32_t now) {
-  // window accounting
-  if (rt.windowStartMs == 0) rt.windowStartMs = now;
-  uint32_t windowMs = cfg.limitWindowSec * 1000UL;
-  if (now - rt.windowStartMs >= windowMs) {
+  // Reset window if expired
+  if (now - rt.windowStartMs >= cfg.limitWindowSec * 1000UL) {
     rt.windowStartMs = now;
     rt.onTimeThisWindowMs = 0;
     rt.lockout = false;
   }
 
-  // update ON time while running
-  static uint32_t lastOnUpdate = 0;
-  if (lastOnUpdate == 0) lastOnUpdate = now;
+  bool shouldBeOn = false;
 
-  if (rt.pumpOn) {
-    rt.onTimeThisWindowMs += (now - lastOnUpdate);
-    uint32_t maxOnMs = cfg.maxOnSecInWindow * 1000UL;
-    if (rt.onTimeThisWindowMs >= maxOnMs) {
-      rt.lockout = true;
+  // Determine desired pump state based on mode
+  if (cfg.mode == PUMP_ON) {
+    shouldBeOn = true;
+  } else if (cfg.mode == PUMP_AUTO) {
+    // Hysteresis logic
+    if (rt.pumpOn) {
+      // Pump is ON: stay on until soil is wet enough
+      shouldBeOn = (rt.soilNow >= cfg.wetOff);
+    } else {
+      // Pump is OFF: turn on only when soil is dry enough
+      shouldBeOn = (rt.soilNow >= cfg.dryOn);
     }
   }
-  lastOnUpdate = now;
+  // PUMP_OFF mode: shouldBeOn stays false
 
-  // mode control
-  bool wantOn = false;
-
-  if (cfg.mode == PUMP_OFF) wantOn = false;
-  else if (cfg.mode == PUMP_ON) wantOn = true;
-  else {
-    // AUTO hysteresis
-    if (!rt.pumpOn && rt.soilNow >= cfg.dryOn) wantOn = true;
-    if (rt.pumpOn && rt.soilNow <= cfg.wetOff) wantOn = false;
-    if (rt.pumpOn) wantOn = true; // keep until wetOff hit (above handled)
+  // Apply safety limits
+  if (shouldBeOn) {
+    // Check max on-time in window
+    if (rt.onTimeThisWindowMs >= cfg.maxOnSecInWindow * 1000UL) {
+      shouldBeOn = false;
+      rt.lockout = true;
+    }
+    // Check min off time (prevent turning on too soon after turning off)
+    if (!rt.pumpOn && (now - rt.lastPumpChangeMs < cfg.minOffMs)) {
+      shouldBeOn = false;
+    }
+  } else {
+    // Check min on time (prevent turning off too soon after turning on)
+    if (rt.pumpOn && (now - rt.lastPumpChangeMs < cfg.minOnMs)) {
+      shouldBeOn = true;
+    }
   }
 
-  // lockout overrides
-  if (rt.lockout) wantOn = false;
-
-  // min on/off
-  uint32_t sinceChange = now - rt.lastPumpChangeMs;
-  if (rt.pumpOn && !wantOn && sinceChange < cfg.minOnMs) wantOn = true;
-  if (!rt.pumpOn && wantOn && sinceChange < cfg.minOffMs) wantOn = false;
-
-  // apply changes
-  if (wantOn != rt.pumpOn) {
-    rt.pumpOn = wantOn;
+  // Apply pump state change
+  if (shouldBeOn && !rt.pumpOn) {
+    // Turn pump ON (forward direction)
+    rt.pumpOn = true;
     rt.lastPumpChangeMs = now;
-    pumpSet(rt.pumpOn);
-  } else {
-    // keep PWM if on
-    if (rt.pumpOn) pumpWrite(cfg.pumpPwm);
+
+    digitalWrite(IN1_PIN, HIGH);
+    digitalWrite(IN2_PIN, LOW);
+
+    if (cfg.softRamp) {
+      // Soft ramp-up
+      for (int pwm = 0; pwm <= cfg.pumpPwm; pwm += 10) {
+        ledcWrite(EN1_PIN, pwm);
+        delay(20);
+      }
+    }
+    ledcWrite(EN1_PIN, cfg.pumpPwm);
+    Serial.println("[PUMP] ON");
+
+  } else if (!shouldBeOn && rt.pumpOn) {
+    // Turn pump OFF
+    rt.pumpOn = false;
+    rt.lastPumpChangeMs = now;
+    ledcWrite(EN1_PIN, 0);
+    digitalWrite(IN1_PIN, LOW);
+    digitalWrite(IN2_PIN, LOW);
+    Serial.println("[PUMP] OFF");
+  }
+
+  // Track on-time within window
+  static uint32_t lastLoopMs = 0;
+  if (rt.pumpOn && lastLoopMs > 0) {
+    rt.onTimeThisWindowMs += (now - lastLoopMs);
+  }
+  lastLoopMs = now;
+}
+
+// ---- History and logging ----
+static void updateHistoryAndLog() {
+  uint32_t now = millis();
+
+  if (now - rt.lastLogMs < cfg.logPeriodMs) return;
+  rt.lastLogMs = now;
+
+  // Update circular buffer
+  hist.soil[hist.idx] = rt.soilNow;
+  hist.tempC_x10[hist.idx] = rt.tempC_x10;
+  hist.cpuPct[hist.idx] = rt.cpuPct;
+
+  hist.idx = (hist.idx + 1) % HIST_LEN;
+  if (hist.idx == 0) hist.filled = true;
+
+  // Append to log file
+  storage_appendLog(rt);
+
+  // Periodically save history to SD (every 10 log entries)
+  static uint8_t saveCounter = 0;
+  if (++saveCounter >= 10) {
+    saveCounter = 0;
+    storage_saveHistory(hist);
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(1200);
-
   Serial.println("BOOT");
 
-  // pins
+  // Watchdog will be enabled after setup completes
+
+  // Initialize motor driver pins
   pinMode(IN1_PIN, OUTPUT);
   pinMode(IN2_PIN, OUTPUT);
-  digitalWrite(IN1_PIN, HIGH);
+  digitalWrite(IN1_PIN, LOW);
   digitalWrite(IN2_PIN, LOW);
 
+  // Initialize PWM for motor enable (ESP-IDF v5.x API)
   ledcAttach(EN1_PIN, PWM_FREQ, PWM_RES);
-  pumpWrite(0);
+  ledcWrite(EN1_PIN, 0);  // Ensure pump is off
 
-  // start WiFi ONCE (background connect)
+  // Initialize ADC
+  analogReadResolution(12);  // 12-bit ADC (0-4095)
+
+  // Connect to WiFi
   net_begin(WIFI_SSID, WIFI_PASS);
 
-  // SD
-  storage_begin(SD_CS, SD_SCK, SD_MISO, SD_MOSI);
-  if (storage_isReady()) {
-    storage_mkdirs();
-    storage_loadConfig(cfg);
-    storage_loadHistory(hist);
+  // Initialize SD card and load config/history
+  storage_begin(5, 18, 19, 23);
+  storage_loadConfig(cfg);
+  storage_validateConfig(cfg);
+  storage_loadHistory(hist);
+  storage_ensureWebUI(net_isUp());
+
+  if (net_isUp()) {
+    ota_begin();
+    web_begin(&cfg, &rt, &hist);
   }
+
+  rt.windowStartMs = millis();
+  rt.lastLogMs = millis();
+
+  // Re-enable watchdog now that setup is complete
+  esp_task_wdt_add(NULL);
 
   Serial.println("[SYS] ready");
 }
 
 void loop() {
-  uint32_t now = millis();
+  // Feed watchdog
+  esp_task_wdt_reset();
 
-  // WiFi “ready edge”: start OTA + Web once when connected
-  if (!servicesStarted && net_isUp()) {
-    servicesStarted = true;
-    Serial.println("[NET] CONNECTED");
-    Serial.print("[NET] IP: ");
-    Serial.println(net_ip());
-    Serial.print("[NET] RSSI: ");
-    Serial.println(WiFi.RSSI());
+  // Core functionality
+  readSensors();
+  controlPump();
+  updateHistoryAndLog();
 
-    ota_begin();
-
-    // ensure web UI cached from GH if missing
-    storage_ensureWebUI(true);
-
-    web_begin(&cfg, &rt, &hist);
-  }
-
-  // always keep CPU fed
-  cpuTick();
-
-  // sensors + logic
-  updateSensors();
-  pumpLogic(now);
-
-  // logging/history
-  if (now - rt.lastLogMs >= cfg.logPeriodMs) {
-    rt.lastLogMs = now;
-    historyPush();
-    storage_saveHistory(hist);
-    storage_appendLog(rt);
-  }
-
-  // services
-  if (servicesStarted) {
+  // Network services
+  if (net_isUp()) {
     web_loop();
     ota_loop();
   }
 
-  delay(0);
+  // Small delay to prevent tight loop
+  delay(10);
 }

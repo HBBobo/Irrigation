@@ -1,164 +1,206 @@
 #pragma once
 #include <WebServer.h>
-#include "config.h"
-#include "net.h"
-#include "storage.h"
 #include "fs_api.h"
+#include "config.h"
 
 static WebServer webServer(80);
-static Config*    gCfg  = nullptr;
-static Runtime*   gRt   = nullptr;
-static Histories* gHist = nullptr;
 
-static String jbool(bool v) { return v ? "true" : "false"; }
+static Config*    gCfg;
+static Runtime*   gRt;
+static Histories* gHist;
 
-// serve / from SD (/web/index.html)
-static void handleRoot() {
-  if (!storage_isReady() || !sd.exists("/web/index.html")) {
-    webServer.send(200, "text/plain",
-      "Web UI missing. Upload /web/index.html to SD or let GH download run.");
-    return;
-  }
-
-  FsFile f = sd.open("/web/index.html", O_RDONLY);
-  if (!f) { webServer.send(500, "text/plain", "Failed to open index.html"); return; }
-
-  webServer.setContentLength(f.fileSize());
-  webServer.sendHeader("Content-Type", "text/html; charset=utf-8");
-  webServer.send(200);
-
-  WiFiClient c = webServer.client();
-  uint8_t buf[1024];
-  while (f.available() && c.connected()) {
-    int n = f.read(buf, sizeof(buf));
-    if (n <= 0) break;
-    c.write(buf, n);
-    delay(0);
-  }
-  f.close();
-}
-
+// GET /api/status - real-time sensor data (matches webui expectations)
 static void handleStatus() {
-  String json = "{";
-  json += "\"fw\":\"" + String(FW_VERSION) + "\",";
-  json += "\"wifi\":" + jbool(net_isUp()) + ",";
-  json += "\"ip\":\"" + net_ip().toString() + "\",";
-  json += "\"ip_static\":" + jbool(net_isStatic()) + ",";
-
-  json += "\"soil\":" + String(gRt->soilNow) + ",";
-  json += "\"tempC\":" + String((float)gRt->tempC_x10 / 10.0f, 1) + ",";
-  json += "\"cpuPct\":" + String(gRt->cpuPct) + ",";
-
-  json += "\"pumpOn\":" + jbool(gRt->pumpOn) + ",";
-  json += "\"lockout\":" + jbool(gRt->lockout) + ",";
-  json += "\"mode\":" + String((int)gCfg->mode);
-  json += "}";
+  char json[256];
+  snprintf(json, sizeof(json),
+    "{\"soil\":%d,\"tempC\":%.1f,\"cpuPct\":%u,\"pumpOn\":%s,\"lockout\":%s,\"mode\":%d,\"onTime\":%lu}",
+    gRt->soilNow,
+    gRt->tempC_x10 / 10.0f,
+    gRt->cpuPct,
+    gRt->pumpOn ? "true" : "false",
+    gRt->lockout ? "true" : "false",
+    (int)gCfg->mode,
+    (unsigned long)(gRt->onTimeThisWindowMs / 1000)
+  );
   webServer.send(200, "application/json", json);
 }
 
+// GET /api/config/get - get full config
 static void handleGetConfig() {
-  String json = "{";
-  json += "\"dryOn\":" + String(gCfg->dryOn) + ",";
-  json += "\"wetOff\":" + String(gCfg->wetOff) + ",";
-  json += "\"pumpPwm\":" + String(gCfg->pumpPwm) + ",";
-  json += "\"softRamp\":" + jbool(gCfg->softRamp) + ",";
-  json += "\"minOnMs\":" + String((unsigned long)gCfg->minOnMs) + ",";
-  json += "\"minOffMs\":" + String((unsigned long)gCfg->minOffMs) + ",";
-  json += "\"limitWindowSec\":" + String((unsigned long)gCfg->limitWindowSec) + ",";
-  json += "\"maxOnSecInWindow\":" + String((unsigned long)gCfg->maxOnSecInWindow) + ",";
-  json += "\"logPeriodMs\":" + String((unsigned long)gCfg->logPeriodMs) + ",";
-  json += "\"mode\":" + String((int)gCfg->mode);
-  json += "}";
+  char json[512];
+  snprintf(json, sizeof(json),
+    "{\"dryOn\":%d,\"wetOff\":%d,\"pumpPwm\":%d,\"softRamp\":%s,"
+    "\"minOnMs\":%lu,\"minOffMs\":%lu,\"limitWindowSec\":%lu,"
+    "\"maxOnSecInWindow\":%lu,\"logPeriodMs\":%lu,\"mode\":%d}",
+    gCfg->dryOn,
+    gCfg->wetOff,
+    gCfg->pumpPwm,
+    gCfg->softRamp ? "true" : "false",
+    (unsigned long)gCfg->minOnMs,
+    (unsigned long)gCfg->minOffMs,
+    (unsigned long)gCfg->limitWindowSec,
+    (unsigned long)gCfg->maxOnSecInWindow,
+    (unsigned long)gCfg->logPeriodMs,
+    (int)gCfg->mode
+  );
   webServer.send(200, "application/json", json);
 }
 
-static bool hasArg(const char* k) { return webServer.hasArg(k) && webServer.arg(k).length(); }
-
+// POST /api/config/set - update config
 static void handleSetConfig() {
-  Config old = *gCfg;
+  bool changed = false;
 
-  if (hasArg("dryOn")) gCfg->dryOn = webServer.arg("dryOn").toInt();
-  if (hasArg("wetOff")) gCfg->wetOff = webServer.arg("wetOff").toInt();
-  if (hasArg("pumpPwm")) gCfg->pumpPwm = webServer.arg("pumpPwm").toInt();
-  if (hasArg("softRamp")) gCfg->softRamp = webServer.arg("softRamp").toInt() != 0;
+  if (webServer.hasArg("dryOn")) {
+    gCfg->dryOn = webServer.arg("dryOn").toInt();
+    changed = true;
+  }
+  if (webServer.hasArg("wetOff")) {
+    gCfg->wetOff = webServer.arg("wetOff").toInt();
+    changed = true;
+  }
+  if (webServer.hasArg("pumpPwm")) {
+    gCfg->pumpPwm = webServer.arg("pumpPwm").toInt();
+    changed = true;
+  }
+  if (webServer.hasArg("mode")) {
+    gCfg->mode = (PumpMode)webServer.arg("mode").toInt();
+    changed = true;
+  }
+  if (webServer.hasArg("softRamp")) {
+    gCfg->softRamp = webServer.arg("softRamp").toInt() != 0;
+    changed = true;
+  }
+  if (webServer.hasArg("minOnMs")) {
+    gCfg->minOnMs = webServer.arg("minOnMs").toInt();
+    changed = true;
+  }
+  if (webServer.hasArg("minOffMs")) {
+    gCfg->minOffMs = webServer.arg("minOffMs").toInt();
+    changed = true;
+  }
+  if (webServer.hasArg("maxOnSecInWindow")) {
+    gCfg->maxOnSecInWindow = webServer.arg("maxOnSecInWindow").toInt();
+    changed = true;
+  }
+  if (webServer.hasArg("limitWindowSec")) {
+    gCfg->limitWindowSec = webServer.arg("limitWindowSec").toInt();
+    changed = true;
+  }
 
-  if (hasArg("minOnMs")) gCfg->minOnMs = (uint32_t)webServer.arg("minOnMs").toInt();
-  if (hasArg("minOffMs")) gCfg->minOffMs = (uint32_t)webServer.arg("minOffMs").toInt();
+  if (changed) {
+    storage_validateConfig(*gCfg);
+    storage_saveConfig(*gCfg);
+    Serial.println("[WEB] Config updated");
+  }
 
-  if (hasArg("limitWindowSec")) gCfg->limitWindowSec = (uint32_t)webServer.arg("limitWindowSec").toInt();
-  if (hasArg("maxOnSecInWindow")) gCfg->maxOnSecInWindow = (uint32_t)webServer.arg("maxOnSecInWindow").toInt();
-
-  if (hasArg("logPeriodMs")) gCfg->logPeriodMs = (uint32_t)webServer.arg("logPeriodMs").toInt();
-
-  if (hasArg("mode")) gCfg->mode = (PumpMode)webServer.arg("mode").toInt();
-
-  // sanity
-  if (gCfg->pumpPwm < 0) gCfg->pumpPwm = 0;
-  if (gCfg->pumpPwm > 255) gCfg->pumpPwm = 255;
-  if (gCfg->wetOff >= gCfg->dryOn) gCfg->wetOff = gCfg->dryOn - 50;
-  if (gCfg->limitWindowSec < 5) gCfg->limitWindowSec = 5;
-  if (gCfg->logPeriodMs < 1000) gCfg->logPeriodMs = 1000;
-  if (gCfg->mode > PUMP_ON) gCfg->mode = PUMP_AUTO;
-
-  storage_saveConfig(*gCfg);
-  webServer.send(200, "text/plain", "OK");
+  webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
-static void handleHistory() {
-  // returns ring buffer in chronological order
-  String json = "{";
-  json += "\"len\":" + String((int)HIST_LEN) + ",";
-  json += "\"filled\":" + jbool(gHist->filled) + ",";
-  json += "\"idx\":" + String(gHist->idx) + ",";
-
-  auto emitArrayI16 = [&](const char* key, const int16_t* arr) {
-    json += "\"" + String(key) + "\":[";
-    uint16_t n = gHist->filled ? HIST_LEN : gHist->idx;
-    for (uint16_t i = 0; i < n; i++) {
-      uint16_t pos = gHist->filled ? (gHist->idx + i) % HIST_LEN : i;
-      if (i) json += ",";
-      json += String(arr[pos]);
-    }
-    json += "],";
-  };
-
-  auto emitArrayU8 = [&](const char* key, const uint8_t* arr) {
-    json += "\"" + String(key) + "\":[";
-    uint16_t n = gHist->filled ? HIST_LEN : gHist->idx;
-    for (uint16_t i = 0; i < n; i++) {
-      uint16_t pos = gHist->filled ? (gHist->idx + i) % HIST_LEN : i;
-      if (i) json += ",";
-      json += String(arr[pos]);
-    }
-    json += "],";
-  };
-
-  emitArrayI16("soil", gHist->soil);
-  emitArrayI16("tempC_x10", gHist->tempC_x10);
-  emitArrayU8("cpuPct", gHist->cpuPct);
-
-  // remove trailing comma
-  if (json.endsWith(",")) json.remove(json.length() - 1);
-  json += "}";
-  webServer.send(200, "application/json", json);
-}
-
+// POST /api/restart - restart ESP
 static void handleRestart() {
-  webServer.send(200, "text/plain", "Restarting...");
-  delay(200);
+  webServer.send(200, "application/json", "{\"ok\":true}");
+  delay(500);
   ESP.restart();
 }
 
-static void web_begin(Config* cfg, Runtime* rt, Histories* hist) {
-  gCfg = cfg; gRt = rt; gHist = hist;
+// GET /api/history - sensor history
+static void handleHistory() {
+  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  webServer.send(200, "application/json", "");
 
+  WiFiClient client = webServer.client();
+
+  int count = gHist->filled ? HIST_LEN : gHist->idx;
+
+  client.print("{\"len\":");
+  client.print(count);
+  client.print(",\"idx\":");
+  client.print(gHist->idx);
+  client.print(",\"soil\":[");
+
+  for (int i = 0; i < count; i++) {
+    if (i > 0) client.print(",");
+    client.print(gHist->soil[i]);
+  }
+
+  client.print("],\"temp\":[");
+  for (int i = 0; i < count; i++) {
+    if (i > 0) client.print(",");
+    client.print(gHist->tempC_x10[i] / 10.0f);
+  }
+
+  client.print("],\"cpu\":[");
+  for (int i = 0; i < count; i++) {
+    if (i > 0) client.print(",");
+    client.print(gHist->cpuPct[i]);
+  }
+
+  client.print("]}");
+}
+
+// POST /api/webui/update - force re-download webui from GitHub
+static void handleWebuiUpdate() {
+  // Delete existing files to force re-download
+  if (sd.exists("/web/index.html")) sd.remove("/web/index.html");
+
+  webServer.send(200, "application/json", "{\"ok\":true,\"msg\":\"Restarting to update...\"}");
+  delay(500);
+  ESP.restart();
+}
+
+// Serve static files from SD card
+static void handleStaticFile(const char* path, const char* contentType) {
+  FsFile f = sd.open(path, O_RDONLY);
+  if (!f) {
+    webServer.send(404, "text/plain", "File not found");
+    return;
+  }
+
+  webServer.setContentLength(f.size());
+  webServer.send(200, contentType, "");
+
+  uint8_t buf[1024];
+  while (f.available()) {
+    size_t n = f.read(buf, sizeof(buf));
+    if (n == 0) break;
+    webServer.client().write(buf, n);
+    delay(0);
+  }
+
+  f.close();
+}
+
+static void handleRoot() {
+  handleStaticFile("/web/index.html", "text/html");
+}
+
+static void handleAppJs() {
+  handleStaticFile("/web/app.js", "application/javascript");
+}
+
+static void handleStyleCss() {
+  handleStaticFile("/web/style.css", "text/css");
+}
+
+static void web_begin(Config* cfg, Runtime* rt, Histories* hist) {
+  gCfg  = cfg;
+  gRt   = rt;
+  gHist = hist;
+
+  // Static files
   webServer.on("/", HTTP_GET, handleRoot);
+  webServer.on("/app.js", HTTP_GET, handleAppJs);
+  webServer.on("/style.css", HTTP_GET, handleStyleCss);
+
+  // API endpoints
   webServer.on("/api/status", HTTP_GET, handleStatus);
   webServer.on("/api/config/get", HTTP_GET, handleGetConfig);
   webServer.on("/api/config/set", HTTP_POST, handleSetConfig);
   webServer.on("/api/history", HTTP_GET, handleHistory);
   webServer.on("/api/restart", HTTP_POST, handleRestart);
+  webServer.on("/api/webui/update", HTTP_POST, handleWebuiUpdate);
 
+  // File browser
   fs_register(webServer);
 
   webServer.begin();
