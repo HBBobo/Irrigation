@@ -1,9 +1,13 @@
+#include <esp_task_wdt.h>
 #include "config.h"
 #include "credentials.h"
 #include "net.h"
 #include "ota.h"
 #include "storage.h"
 #include "web.h"
+
+// Watchdog timeout in seconds
+#define WDT_TIMEOUT_SEC 60
 
 // Hardware pins
 #define SOIL_PIN     34   // ADC input for soil moisture sensor
@@ -157,7 +161,14 @@ void setup() {
   Serial.begin(115200);
   Serial.println("BOOT");
 
-  // Watchdog will be enabled after setup completes
+  // Configure watchdog with longer timeout (60 seconds)
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT_SEC * 1000,
+    .idle_core_mask = 0,  // Don't watch idle tasks
+    .trigger_panic = true
+  };
+  esp_task_wdt_reconfigure(&wdt_config);
+  esp_task_wdt_add(NULL);  // Add current task to watchdog
 
   // Initialize motor driver pins
   pinMode(IN1_PIN, OUTPUT);
@@ -195,6 +206,8 @@ void setup() {
 }
 
 void loop() {
+  // Feed watchdog
+  esp_task_wdt_reset();
 
   // Core functionality
   readSensors();
