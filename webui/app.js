@@ -78,13 +78,15 @@ async function applyMode() {
   params.append("mode", mode);
 
   try {
-    await fetch("/api/config/set", {
+    const res = await fetch("/api/config/set", {
       method: "POST",
-      body: params
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString()
     });
+    if (!res.ok) throw new Error("HTTP " + res.status);
     loadStatus();
   } catch (e) {
-    alert("Failed to apply mode");
+    alert("Failed to apply mode: " + e.message);
   }
 }
 
@@ -97,14 +99,16 @@ async function saveConfig() {
   params.append("mode", $("mode").value);
 
   try {
-    await fetch("/api/config/set", {
+    const res = await fetch("/api/config/set", {
       method: "POST",
-      body: params
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString()
     });
+    if (!res.ok) throw new Error("HTTP " + res.status);
     alert("Config saved!");
     loadConfig();
   } catch (e) {
-    alert("Failed to save config");
+    alert("Failed to save config: " + e.message);
   }
 }
 

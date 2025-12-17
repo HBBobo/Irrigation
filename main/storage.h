@@ -318,11 +318,20 @@ static void storage_downloadWebFile(const char* filename, bool wifiUp) {
   Serial.print("[SD] downloading ");
   Serial.println(url);
 
-  if (storage_downloadToFile(url, localPath, 15000)) {
-    Serial.printf("[SD] %s OK\n", filename);
-  } else {
-    Serial.printf("[SD] %s FAIL\n", filename);
+  // Try up to 3 times with longer timeout for larger files
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      Serial.printf("[SD] retry %d...\n", attempt);
+      delay(2000);  // Wait before retry
+    }
+
+    if (storage_downloadToFile(url, localPath, 30000)) {  // 30 second timeout
+      Serial.printf("[SD] %s OK\n", filename);
+      return;
+    }
   }
+
+  Serial.printf("[SD] %s FAIL after 3 attempts\n", filename);
 }
 
 // Parse file size from JSON for a specific file
@@ -503,49 +512,60 @@ static void storage_ensureWebUI(bool wifiUp) {
 
   Serial.println("[SD] downloading web UI files...");
 
-  // Download all web files (with delay between to avoid connection issues)
-  int successCount = 0;
-  for (int i = 0; i < WEB_FILES_COUNT; i++) {
-    storage_downloadWebFile(WEB_FILES[i], wifiUp);
-    delay(1000);  // Wait between downloads to let connection close properly
-  }
+  // Retry entire download+verify cycle up to 3 times
+  for (int cycle = 0; cycle < 3; cycle++) {
+    if (cycle > 0) {
+      Serial.printf("[SD] WebUI download cycle %d...\n", cycle + 1);
+      delay(3000);  // Wait before retry cycle
+    }
 
-  // Verify all files exist and have exact expected size
-  for (int i = 0; i < WEB_FILES_COUNT; i++) {
-    char path[32];
-    snprintf(path, sizeof(path), "/web/%s", WEB_FILES[i]);
-    FsFile f = sd.open(path, O_RDONLY);
-    if (f) {
-      size_t actualSize = f.size();
-      size_t expectedSize = g_webFileSizes[i];
-      f.close();
+    // Download all web files (with delay between to avoid connection issues)
+    for (int i = 0; i < WEB_FILES_COUNT; i++) {
+      storage_downloadWebFile(WEB_FILES[i], wifiUp);
+      delay(1000);  // Wait between downloads to let connection close properly
+    }
 
-      if (expectedSize > 0 && actualSize == expectedSize) {
-        successCount++;
-        Serial.printf("[SD] %s verified: %u bytes\n", WEB_FILES[i], (unsigned)actualSize);
+    // Verify all files exist and have exact expected size
+    int successCount = 0;
+    for (int i = 0; i < WEB_FILES_COUNT; i++) {
+      char path[32];
+      snprintf(path, sizeof(path), "/web/%s", WEB_FILES[i]);
+      FsFile f = sd.open(path, O_RDONLY);
+      if (f) {
+        size_t actualSize = f.size();
+        size_t expectedSize = g_webFileSizes[i];
+        f.close();
+
+        if (expectedSize > 0 && actualSize == expectedSize) {
+          successCount++;
+          Serial.printf("[SD] %s verified: %u bytes\n", WEB_FILES[i], (unsigned)actualSize);
+        } else {
+          Serial.printf("[SD] %s size mismatch: got %u, expected %u\n",
+                        WEB_FILES[i], (unsigned)actualSize, (unsigned)expectedSize);
+        }
       } else {
-        Serial.printf("[SD] %s size mismatch: got %u, expected %u\n",
-                      WEB_FILES[i], (unsigned)actualSize, (unsigned)expectedSize);
+        Serial.printf("[SD] %s missing\n", WEB_FILES[i]);
       }
-    } else {
-      Serial.printf("[SD] %s missing\n", WEB_FILES[i]);
     }
+
+    // If all files verified, save version and return
+    if (successCount == WEB_FILES_COUNT) {
+      if (remoteVer.length() == 0) {
+        remoteVer = storage_getRemoteWebuiVersion(wifiUp);
+      }
+      if (remoteVer.length() > 0) {
+        storage_saveLocalWebuiVersion(remoteVer);
+        Serial.printf("[SD] WebUI updated to version %s\n", remoteVer.c_str());
+      }
+      return;  // Success!
+    }
+
+    Serial.printf("[SD] WebUI update incomplete: %d/%d files\n", successCount, WEB_FILES_COUNT);
   }
 
-  // Only save version if ALL files downloaded and verified successfully
-  if (successCount == WEB_FILES_COUNT) {
-    if (remoteVer.length() == 0) {
-      remoteVer = storage_getRemoteWebuiVersion(wifiUp);
-    }
-    if (remoteVer.length() > 0) {
-      storage_saveLocalWebuiVersion(remoteVer);
-      Serial.printf("[SD] WebUI updated to version %s\n", remoteVer.c_str());
-    }
-  } else {
-    Serial.printf("[SD] WebUI update incomplete: %d/%d files\n", successCount, WEB_FILES_COUNT);
-    // Delete version file to force re-download next boot
-    if (sd.exists(LOCAL_WEBUI_VERSION_FILE)) {
-      sd.remove(LOCAL_WEBUI_VERSION_FILE);
-    }
+  // All cycles failed - delete version file to force re-download next boot
+  Serial.println("[SD] WebUI update failed after all retries");
+  if (sd.exists(LOCAL_WEBUI_VERSION_FILE)) {
+    sd.remove(LOCAL_WEBUI_VERSION_FILE);
   }
 }
