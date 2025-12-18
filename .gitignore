@@ -11,6 +11,8 @@ nul
 # IDE
 .vscode/
 *.code-workspace
+
+#Claude AI files
 .claude/
 
 # OS
