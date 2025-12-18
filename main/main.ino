@@ -2,8 +2,8 @@
 #include "config.h"
 #include "credentials.h"
 #include "net.h"
-#include "ota.h"
 #include "storage.h"
+#include "ota.h"
 #include "web.h"
 
 // Watchdog timeout in seconds
@@ -147,6 +147,7 @@ static void updateHistoryAndLog() {
 void setup() {
   Serial.begin(115200);
   Serial.println("BOOT");
+  Serial.println("Hello from firmware v1.0.2!");
 
   // Configure watchdog with longer timeout (60 seconds)
   esp_task_wdt_config_t wdt_config = {

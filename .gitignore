@@ -2,7 +2,6 @@
 main/credentials.h
 
 # Build artifacts
-*.bin
 *.elf
 *.hex
 build/

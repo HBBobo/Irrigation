@@ -109,7 +109,7 @@ static void fs_handleList(WebServer& srv) {
   srv.send(200, "application/json", json);
 }
 
-// Download file (supports chunked range requests)
+// Download file
 static void fs_handleDownload(WebServer& srv) {
   if (!srv.hasArg("path")) {
     srv.send(400, "text/plain", "missing path");
@@ -125,48 +125,29 @@ static void fs_handleDownload(WebServer& srv) {
   }
 
   size_t fileSize = f.size();
-  size_t start = 0;
-  size_t len = fileSize;
 
-  // Support range requests for chunked downloads
-  if (srv.hasArg("start")) {
-    start = srv.arg("start").toInt();
-    if (start >= fileSize) {
-      f.close();
-      srv.send(416, "text/plain", "range not satisfiable");
-      return;
-    }
-  }
-  if (srv.hasArg("len")) {
-    len = srv.arg("len").toInt();
-  }
-  if (start + len > fileSize) {
-    len = fileSize - start;
+  // Read entire file into buffer (limit to reasonable size)
+  if (fileSize > 65536) {
+    f.close();
+    srv.send(413, "text/plain", "file too large");
+    return;
   }
 
-  // Seek to start position
-  f.seek(start);
-
-  // Send headers
-  srv.sendHeader("Content-Length", String(len));
-  srv.sendHeader("X-File-Size", String(fileSize));
-  srv.send(200, "application/octet-stream", "");
-
-  // Stream file in chunks
-  uint8_t buf[1024];
-  size_t sent = 0;
-  WiFiClient client = srv.client();
-
-  while (sent < len && f.available()) {
-    size_t toRead = min((size_t)sizeof(buf), len - sent);
-    size_t n = f.read(buf, toRead);
-    if (n == 0) break;
-    client.write(buf, n);
-    sent += n;
-    delay(0);  // Yield
+  uint8_t* buf = (uint8_t*)malloc(fileSize);
+  if (!buf) {
+    f.close();
+    srv.send(500, "text/plain", "out of memory");
+    return;
   }
 
+  size_t bytesRead = f.read(buf, fileSize);
   f.close();
+
+  // Send complete response at once
+  srv.sendHeader("Content-Disposition", "attachment; filename=\"" + path.substring(path.lastIndexOf('/') + 1) + "\"");
+  srv.send_P(200, "application/octet-stream", (const char*)buf, bytesRead);
+
+  free(buf);
 }
 
 // Delete file or empty directory
