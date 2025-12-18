@@ -5,18 +5,33 @@ const canvas = $("chart");
 const ctx = canvas.getContext("2d");
 
 // Auto-refresh intervals (ms)
-const STATUS_INTERVAL = 2000;
-const HISTORY_INTERVAL = 10000;
+const STATUS_INTERVAL = 3000;
+const HISTORY_INTERVAL = 15000;
 
 // History data storage
 let historyData = { soil: [], temp: [], cpu: [], idx: 0, len: 0 };
 let logPeriodMs = 5000; // Default, will be updated from config
 
-// Fetch JSON helper
-async function fetchJSON(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  return res.json();
+// Prevent concurrent requests
+let fetchInProgress = false;
+
+// Fetch JSON helper with timeout
+async function fetchJSON(url, timeoutMs = 5000) {
+  if (fetchInProgress) return null;
+  fetchInProgress = true;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
+  } finally {
+    fetchInProgress = false;
+  }
 }
 
 // Update timestamp
@@ -28,6 +43,7 @@ function updateTime() {
 async function loadStatus() {
   try {
     const s = await fetchJSON("/api/status");
+    if (!s) return; // Request skipped (another in progress)
 
     $("soil").textContent = s.soil;
     $("temp").textContent = s.tempC.toFixed(1);
@@ -55,6 +71,7 @@ async function loadStatus() {
 async function loadConfig() {
   try {
     const c = await fetchJSON("/api/config/get");
+    if (!c) return;
 
     $("dryOn").value = c.dryOn;
     $("wetOff").value = c.wetOff;
@@ -262,9 +279,10 @@ function drawChart() {
 // Load history from ESP
 async function loadHistory() {
   try {
-    const h = await fetchJSON("/api/history");
+    const h = await fetchJSON("/api/history", 10000); // Longer timeout for history
+    if (!h) return; // Request skipped
 
-    if (h && h.len > 0) {
+    if (h.len > 0) {
       // Reorder circular buffer to linear array (oldest first)
       const reorder = (arr, idx, len, filled) => {
         if (!arr || arr.length === 0) return [];
@@ -303,12 +321,28 @@ function fsFormatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
+// Separate fetch for file browser (doesn't use global lock)
+async function fsFetch(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeout);
+    return res;
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
+  }
+}
+
 async function fsLoadDir(path) {
   currentPath = path || "/";
   $("fsPath").textContent = currentPath;
 
   try {
-    const data = await fetchJSON("/api/fs/list?path=" + encodeURIComponent(currentPath));
+    const res = await fsFetch("/api/fs/list?path=" + encodeURIComponent(currentPath));
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
     const list = $("fsList");
     list.innerHTML = "";
 

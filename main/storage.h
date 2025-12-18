@@ -3,6 +3,7 @@
 #include <SdFat.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <esp_task_wdt.h>
 
 #include "config.h"
 
@@ -230,25 +231,26 @@ static void storage_appendLog(const Runtime& rt) {
   f.close();
 }
 
-// ----- GitHub web UI cache: download /web/index.html if missing
-static bool storage_downloadToFile(const String& url, const char* outPath, uint32_t timeoutMs = 15000) {
+// ----- GitHub web UI cache: download file in chunks
+// Downloads in 4KB chunks with delays to avoid watchdog timeout
+static bool storage_downloadToFile(const String& url, const char* outPath, uint32_t timeoutMs = 30000) {
   if (!g_sdReady) return false;
 
   WiFiClientSecure client;
-
-  // Skip SSL verification for now (GitHub certs change frequently)
   client.setInsecure();
-
-  // Set connection timeout
-  client.setTimeout(timeoutMs / 1000);
+  client.setTimeout(10);
 
   HTTPClient http;
-  http.setTimeout(timeoutMs);
+  http.setTimeout(10000);
 
   if (!http.begin(client, url)) {
     Serial.println("[SD] HTTP begin failed");
     return false;
   }
+
+  // Get file size first with HEAD request
+  const char* hdrs[] = {"Content-Length"};
+  http.collectHeaders(hdrs, 1);
 
   int code = http.GET();
   if (code != 200) {
@@ -257,37 +259,86 @@ static bool storage_downloadToFile(const String& url, const char* outPath, uint3
     return false;
   }
 
-  FsFile f = sd.open(outPath, O_WRITE | O_CREAT | O_TRUNC);
-  if (!f) {
-    Serial.println("[SD] File open failed");
-    http.end();
+  size_t totalSize = http.getSize();
+  http.end();
+
+  if (totalSize <= 0) {
+    Serial.println("[SD] Unknown file size");
     return false;
   }
 
-  WiFiClient* stream = http.getStreamPtr();
-  uint8_t buf[1024];
-  size_t total = 0;  // Use size_t instead of int to prevent overflow
-  uint32_t startMs = millis();
+  Serial.printf("[SD] File size: %u bytes\n", (unsigned)totalSize);
 
-  while (http.connected() && (millis() - startMs < timeoutMs)) {
-    int avail = stream->available();
-    if (avail > 0) {
-      int n = stream->readBytes((char*)buf, (size_t)min(avail, (int)sizeof(buf)));
-      if (n <= 0) break;
-      f.write(buf, n);
-      total += n;
-      delay(0);  // Yield to prevent watchdog
-    } else {
-      if (!stream->connected()) break;
-      delay(10);
+  // Download in chunks using Range requests
+  const size_t CHUNK_SIZE = 4096;
+  size_t downloaded = 0;
+
+  FsFile f = sd.open(outPath, O_WRITE | O_CREAT | O_TRUNC);
+  if (!f) {
+    Serial.println("[SD] File open failed");
+    return false;
+  }
+
+  while (downloaded < totalSize) {
+    size_t chunkEnd = min(downloaded + CHUNK_SIZE - 1, totalSize - 1);
+
+    // Create new connection for each chunk
+    WiFiClientSecure chunkClient;
+    chunkClient.setInsecure();
+    chunkClient.setTimeout(10);
+
+    HTTPClient chunkHttp;
+    chunkHttp.setTimeout(10000);
+
+    if (!chunkHttp.begin(chunkClient, url)) {
+      Serial.println("[SD] Chunk HTTP begin failed");
+      f.close();
+      return false;
     }
+
+    // Request specific byte range
+    char rangeHeader[32];
+    snprintf(rangeHeader, sizeof(rangeHeader), "bytes=%u-%u", (unsigned)downloaded, (unsigned)chunkEnd);
+    chunkHttp.addHeader("Range", rangeHeader);
+
+    int chunkCode = chunkHttp.GET();
+    if (chunkCode != 200 && chunkCode != 206) {
+      Serial.printf("[SD] Chunk GET failed: %d\n", chunkCode);
+      chunkHttp.end();
+      f.close();
+      return false;
+    }
+
+    // Read chunk data
+    WiFiClient* stream = chunkHttp.getStreamPtr();
+    uint8_t buf[512];
+    size_t chunkDownloaded = 0;
+    size_t expectedChunk = chunkEnd - downloaded + 1;
+
+    while (chunkDownloaded < expectedChunk && stream->connected()) {
+      int avail = stream->available();
+      if (avail > 0) {
+        int n = stream->readBytes((char*)buf, min((size_t)avail, sizeof(buf)));
+        if (n > 0) {
+          f.write(buf, n);
+          chunkDownloaded += n;
+        }
+      } else {
+        delay(5);
+      }
+    }
+
+    chunkHttp.end();
+    downloaded += chunkDownloaded;
+
+    // Progress and yield between chunks
+    Serial.printf("[SD] %u/%u bytes\n", (unsigned)downloaded, (unsigned)totalSize);
+    delay(50);  // Give system time between chunks
   }
 
   f.close();
-  http.end();
-
-  Serial.printf("[SD] Downloaded %u bytes\n", (unsigned)total);
-  return total > 0;
+  Serial.printf("[SD] Downloaded %u bytes\n", (unsigned)downloaded);
+  return downloaded == totalSize;
 }
 
 // Web UI files to download from GitHub
