@@ -76,6 +76,8 @@ async function loadConfig() {
     $("dryOn").value = c.dryOn;
     $("wetOff").value = c.wetOff;
     $("mode").value = c.mode;
+    $("minOnMs").value = c.minOnMs;
+    $("minOffMs").value = c.minOffMs;
     $("limitWindowSec").value = c.limitWindowSec;
     $("maxOnSecInWindow").value = c.maxOnSecInWindow;
 
@@ -114,6 +116,8 @@ async function saveConfig() {
   params.append("dryOn", $("dryOn").value);
   params.append("wetOff", $("wetOff").value);
   params.append("mode", $("mode").value);
+  params.append("minOnMs", $("minOnMs").value);
+  params.append("minOffMs", $("minOffMs").value);
   params.append("limitWindowSec", $("limitWindowSec").value);
   params.append("maxOnSecInWindow", $("maxOnSecInWindow").value);
 
