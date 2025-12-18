@@ -11,9 +11,14 @@
 
 // Hardware pins
 #define SOIL_PIN     34   // ADC input for soil moisture sensor
-#define EN1_PIN      13   // Motor driver enable (digital)
+#define EN1_PIN      13   // Motor driver enable (PWM)
 #define IN1_PIN      14   // Motor driver input 1
 #define IN2_PIN      27   // Motor driver input 2
+
+// PWM settings
+#define PWM_CHANNEL  0
+#define PWM_FREQ     5000
+#define PWM_RES      8    // 8-bit resolution (0-255)
 
 Config cfg;
 Runtime rt;
@@ -97,14 +102,22 @@ static void controlPump() {
 
     digitalWrite(IN1_PIN, LOW);
     digitalWrite(IN2_PIN, HIGH);
-    digitalWrite(EN1_PIN, HIGH);
+
+    if (cfg.softRamp) {
+      // Soft ramp-up
+      for (int pwm = 0; pwm <= cfg.pumpPwm; pwm += 10) {
+        ledcWrite(EN1_PIN, pwm);
+        delay(20);
+      }
+    }
+    ledcWrite(EN1_PIN, cfg.pumpPwm);
     Serial.println("[PUMP] ON");
 
   } else if (!shouldBeOn && rt.pumpOn) {
     // Turn pump OFF
     rt.pumpOn = false;
     rt.lastPumpChangeMs = now;
-    digitalWrite(EN1_PIN, LOW);
+    ledcWrite(EN1_PIN, 0);
     digitalWrite(IN1_PIN, LOW);
     digitalWrite(IN2_PIN, LOW);
     Serial.println("[PUMP] OFF");
@@ -158,12 +171,14 @@ void setup() {
   esp_task_wdt_add(NULL);  // Add current task to watchdog
 
   // Initialize motor driver pins
-  pinMode(EN1_PIN, OUTPUT);
   pinMode(IN1_PIN, OUTPUT);
   pinMode(IN2_PIN, OUTPUT);
-  digitalWrite(EN1_PIN, LOW);
   digitalWrite(IN1_PIN, LOW);
   digitalWrite(IN2_PIN, LOW);
+
+  // Initialize PWM for motor enable (ESP-IDF v5.x API)
+  ledcAttach(EN1_PIN, PWM_FREQ, PWM_RES);
+  ledcWrite(EN1_PIN, 0);  // Ensure pump is off
 
   // Initialize ADC
   analogReadResolution(12);  // 12-bit ADC (0-4095)

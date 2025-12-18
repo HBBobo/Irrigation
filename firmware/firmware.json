@@ -4,10 +4,10 @@
     "url": "https://raw.githubusercontent.com/HBBobo/Irrigation/main/firmware/irrigation.bin"
   },
   "webui": {
-    "version": "1.10",
+    "version": "1.11",
     "files": {
-      "index.html": 3934,
-      "app.js": 13748,
+      "index.html": 3809,
+      "app.js": 13664,
       "style.css": 2137
     }
   }

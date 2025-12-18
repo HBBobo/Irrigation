@@ -75,7 +75,6 @@ async function loadConfig() {
 
     $("dryOn").value = c.dryOn;
     $("wetOff").value = c.wetOff;
-    $("pumpPwm").value = c.pumpPwm;
     $("mode").value = c.mode;
 
     // Store log period for chart calculations
@@ -112,7 +111,6 @@ async function saveConfig() {
   const params = new URLSearchParams();
   params.append("dryOn", $("dryOn").value);
   params.append("wetOff", $("wetOff").value);
-  params.append("pumpPwm", $("pumpPwm").value);
   params.append("mode", $("mode").value);
 
   try {
