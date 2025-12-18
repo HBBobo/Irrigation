@@ -76,6 +76,8 @@ async function loadConfig() {
     $("dryOn").value = c.dryOn;
     $("wetOff").value = c.wetOff;
     $("mode").value = c.mode;
+    $("limitWindowSec").value = c.limitWindowSec;
+    $("maxOnSecInWindow").value = c.maxOnSecInWindow;
 
     // Store log period for chart calculations
     if (c.logPeriodMs) {
@@ -112,6 +114,8 @@ async function saveConfig() {
   params.append("dryOn", $("dryOn").value);
   params.append("wetOff", $("wetOff").value);
   params.append("mode", $("mode").value);
+  params.append("limitWindowSec", $("limitWindowSec").value);
+  params.append("maxOnSecInWindow", $("maxOnSecInWindow").value);
 
   try {
     const res = await fetch("/api/config/set", {
