@@ -407,7 +407,7 @@ function fsRefresh() {
 
 async function fsDownload(path, filename) {
   try {
-    const res = await fetch("/api/fs/download?path=" + encodeURIComponent(path));
+    const res = await fsFetch("/api/fs/download?path=" + encodeURIComponent(path));
     if (!res.ok) throw new Error("Download failed");
 
     const blob = await res.blob();

@@ -110,40 +110,39 @@ static void handleHistory() {
   // Reset watchdog before long operation
   esp_task_wdt_reset();
 
-  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  webServer.send(200, "application/json", "");
-
-  WiFiClient client = webServer.client();
-
   int count = gHist->filled ? HIST_LEN : gHist->idx;
 
-  client.print("{\"len\":");
-  client.print(count);
-  client.print(",\"idx\":");
-  client.print(gHist->idx);
-  client.print(",\"soil\":[");
+  // Build JSON in a buffer - more reliable than streaming
+  // Estimate: 240 items * 3 arrays * ~8 chars each = ~6KB max
+  String json;
+  json.reserve(8192);
+
+  json = "{\"len\":";
+  json += count;
+  json += ",\"idx\":";
+  json += gHist->idx;
+  json += ",\"soil\":[";
 
   for (int i = 0; i < count; i++) {
-    if (i > 0) client.print(",");
-    client.print(gHist->soil[i]);
-    if ((i & 0x3F) == 0) delay(0);  // Yield every 64 items
+    if (i > 0) json += ",";
+    json += gHist->soil[i];
   }
 
-  client.print("],\"temp\":[");
+  json += "],\"temp\":[";
   for (int i = 0; i < count; i++) {
-    if (i > 0) client.print(",");
-    client.print(gHist->tempC_x10[i] / 10.0f);
-    if ((i & 0x3F) == 0) delay(0);  // Yield every 64 items
+    if (i > 0) json += ",";
+    json += String(gHist->tempC_x10[i] / 10.0f, 1);
   }
 
-  client.print("],\"cpu\":[");
+  json += "],\"cpu\":[";
   for (int i = 0; i < count; i++) {
-    if (i > 0) client.print(",");
-    client.print(gHist->cpuPct[i]);
-    if ((i & 0x3F) == 0) delay(0);  // Yield every 64 items
+    if (i > 0) json += ",";
+    json += gHist->cpuPct[i];
   }
 
-  client.print("]}");
+  json += "]}";
+
+  webServer.send(200, "application/json", json);
 }
 
 // POST /api/webui/update - force re-download webui from GitHub
