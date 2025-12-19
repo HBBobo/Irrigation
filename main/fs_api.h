@@ -109,7 +109,7 @@ static void fs_handleList(WebServer& srv) {
   srv.send(200, "application/json", json);
 }
 
-// Download file
+// Download file - streams in chunks for large files
 static void fs_handleDownload(WebServer& srv) {
   if (!srv.hasArg("path")) {
     srv.send(400, "text/plain", "missing path");
@@ -125,29 +125,28 @@ static void fs_handleDownload(WebServer& srv) {
   }
 
   size_t fileSize = f.size();
+  String filename = path.substring(path.lastIndexOf('/') + 1);
 
-  // Read entire file into buffer (limit to reasonable size)
-  if (fileSize > 65536) {
-    f.close();
-    srv.send(413, "text/plain", "file too large");
-    return;
+  // Set headers for download
+  srv.sendHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+  srv.setContentLength(fileSize);
+  srv.send(200, "application/octet-stream", "");
+
+  // Stream file in chunks
+  WiFiClient client = srv.client();
+  uint8_t buf[1024];
+  size_t sent = 0;
+
+  while (sent < fileSize && f.available()) {
+    size_t toRead = min((size_t)sizeof(buf), fileSize - sent);
+    size_t n = f.read(buf, toRead);
+    if (n == 0) break;
+    client.write(buf, n);
+    sent += n;
+    delay(1);  // Yield to prevent watchdog
   }
 
-  uint8_t* buf = (uint8_t*)malloc(fileSize);
-  if (!buf) {
-    f.close();
-    srv.send(500, "text/plain", "out of memory");
-    return;
-  }
-
-  size_t bytesRead = f.read(buf, fileSize);
   f.close();
-
-  // Send complete response at once
-  srv.sendHeader("Content-Disposition", "attachment; filename=\"" + path.substring(path.lastIndexOf('/') + 1) + "\"");
-  srv.send_P(200, "application/octet-stream", (const char*)buf, bytesRead);
-
-  free(buf);
 }
 
 // Delete file or empty directory

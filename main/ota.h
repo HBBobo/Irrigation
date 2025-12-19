@@ -7,7 +7,7 @@
 #include "credentials.h"
 
 // Current firmware version - update this when releasing new versions
-#define FIRMWARE_VERSION "1.0.2"
+#define FIRMWARE_VERSION "1.0.3"
 
 // Path to store running firmware version on SD
 static const char* OTA_VERSION_FILE = "/firmware.version";

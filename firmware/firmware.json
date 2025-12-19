@@ -1,10 +1,10 @@
 {
   "firmware": {
-    "version": "1.0.2",
+    "version": "1.0.3",
     "url": "https://raw.githubusercontent.com/HBBobo/Irrigation/main/firmware/irrigation.bin"
   },
   "webui": {
-    "version": "2.0.5",
+    "version": "2.3.0",
     "files": {
       "index.html": 4453,
       "app.js": 14070,
