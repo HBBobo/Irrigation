@@ -156,6 +156,14 @@ static void handleWebuiUpdate() {
   ESP.restart();
 }
 
+// POST /api/firmware/update - check and apply firmware update from GitHub
+static void handleFirmwareUpdate() {
+  webServer.send(200, "application/json", "{\"ok\":true,\"msg\":\"Checking for firmware update...\"}");
+  webServer.client().flush();
+  delay(100);
+  ota_checkForUpdate();
+}
+
 // Serve static files from SD card
 static void handleStaticFile(const char* path, const char* contentType) {
   FsFile f = sd.open(path, O_RDONLY);
@@ -208,6 +216,8 @@ static void web_begin(Config* cfg, Runtime* rt, Histories* hist) {
   webServer.on("/api/restart", HTTP_POST, handleRestart);
   webServer.on("/api/webui/update", HTTP_POST, handleWebuiUpdate);
   webServer.on("/api/webui/update", HTTP_GET, handleWebuiUpdate);  // Also allow GET for easy browser trigger
+  webServer.on("/api/firmware/update", HTTP_POST, handleFirmwareUpdate);
+  webServer.on("/api/firmware/update", HTTP_GET, handleFirmwareUpdate);  // Also allow GET for easy browser trigger
 
   // File browser
   fs_register(webServer);

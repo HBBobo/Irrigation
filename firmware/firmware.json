@@ -1,7 +1,7 @@
 {
   "firmware": {
-    "version": "1.0.3",
-    "url": "https://raw.githubusercontent.com/HBBobo/Irrigation/main/firmware/irrigation.bin"
+    "version": "1.0.4",
+    "url": "https://raw.githubusercontent.com/HBBobo/Irrigation/main/firmware/latest.bin"
   },
   "webui": {
     "version": "2.3.0",
